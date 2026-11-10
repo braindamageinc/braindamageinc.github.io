@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel FX Spritesheet Generator</title>
+<style>
+  :root { --bg:#14141c; --panel:#1f1f2b; --fg:#e8e8f0; --accent:#ff9a3c; --muted:#8a8aa0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 20px; border-bottom:1px solid #2c2c3c; }
+  h1 { margin:0; font-size:1.2rem; }
+  main { display:flex; flex-wrap:wrap; gap:20px; padding:20px; }
+  .panel { background:var(--panel); border-radius:8px; padding:16px; }
+  #controls { width:260px; display:flex; flex-direction:column; gap:12px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:.85rem; color:var(--muted); }
+  select, input[type=number] { background:#12121a; color:var(--fg); border:1px solid #38384c; border-radius:4px; padding:6px; font-size:1rem; }
+  input[type=range] { width:100%; }
+  button { background:var(--accent); color:#1a1208; border:0; border-radius:4px; padding:10px; font-weight:600; font-size:1rem; cursor:pointer; }
+  button.secondary { background:#38384c; color:var(--fg); }
+  button:hover { filter:brightness(1.1); }
+  .val { color:var(--fg); }
+  #view { flex:1; min-width:300px; display:flex; flex-direction:column; gap:20px; }
+  canvas { image-rendering: pixelated; background:
+    conic-gradient(#2a2a38 25%, #222230 0 50%, #2a2a38 0 75%, #222230 0) 0 0/16px 16px; border-radius:4px; max-width:100%; }
+  #sheetWrap { overflow:auto; max-height:70vh; }
+  .swatches { display:flex; flex-wrap:wrap; gap:2px; }
+  .swatches span { width:18px; height:18px; border:1px solid #000; }
+  input[type=file] { font-size:.8rem; color:var(--fg); }
+  h2 { margin:0 0 10px; font-size:1rem; }
+  .info { color:var(--muted); font-size:.8rem; margin-top:6px; }
+</style>
+</head>
+<body>
+<header><h1>Pixel FX Spritesheet Generator</h1></header>
+<main>
+  <section id="controls" class="panel">
+    <label>Effect
+      <select id="effect">
+        <option value="explosion">Explosion</option>
+        <option value="lightning">Lightning</option>
+        <option value="blood">Blood</option>
+        <option value="fire">Fire</option>
+        <option value="smoke">Smoke</option>
+        <option value="poison">Poison cloud</option>
+        <option value="ice">Ice shards</option>
+        <option value="water">Water</option>
+        <option value="bubbles">Bubbles</option>
+        <option value="wave">Water wave</option>
+        <option value="rune">Spinning rune</option>
+      </select>
+    </label>
+    <label id="dirLabel">Blood direction
+      <select id="direction">
+        <option value="-90" selected>Up</option>
+        <option value="-45">Up-right</option>
+        <option value="0">Right</option>
+        <option value="45">Down-right</option>
+        <option value="90">Down</option>
+        <option value="135">Down-left</option>
+        <option value="180">Left</option>
+        <option value="-135">Up-left</option>
+        <option value="burst">Burst (all directions)</option>
+      </select>
+    </label>
+    <label id="waveDirLabel">Wave direction
+      <select id="waveDirection">
+        <option value="right" selected>Right</option>
+        <option value="left">Left</option>
+        <option value="standing">Standing wave</option>
+      </select>
+    </label>
+    <label>Frame size
+      <select id="size">
+        <option value="16">16 × 16</option>
+        <option value="32" selected>32 × 32</option>
+        <option value="48">48 × 48</option>
+        <option value="64">64 × 64</option>
+      </select>
+    </label>
+    <label>Frames: <span class="val" id="framesV">12</span>
+      <input type="range" id="frames" min="4" max="32" value="12">
+    </label>
+    <label>Spritesheet columns: <span class="val" id="colsV">4</span>
+      <input type="range" id="cols" min="1" max="12" value="4">
+    </label>
+    <label>Playback FPS: <span class="val" id="fpsV">12</span>
+      <input type="range" id="fps" min="1" max="30" value="12">
+    </label>
+    <label>Custom palette (horizontal color strip image)
+      <input type="file" id="paletteFile" accept="image/*">
+    </label>
+    <div id="swatches" class="swatches"></div>
+    <button id="clearPalette" class="secondary" style="display:none">Clear custom palette</button>
+    <label>Seed
+      <input type="number" id="seed" value="1">
+    </label>
+    <button id="regen" class="secondary">Randomize / Regenerate</button>
+    <button id="download">Download spritesheet (PNG)</button>
+  </section>
+
+  <section id="view">
+    <div class="panel">
+      <h2>Animation preview</h2>
+      <canvas id="preview"></canvas>
+      <div class="info" id="frameInfo"></div>
+    </div>
+    <div class="panel">
+      <h2>Spritesheet</h2>
+      <div id="sheetWrap"><canvas id="sheet"></canvas></div>
+      <div class="info" id="sheetInfo"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ---------- utilities ----------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const hex = h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// A frame is a Uint8ClampedArray RGBA at size×size.
+function newFrame(size) { return new Uint8ClampedArray(size * size * 4); }
+function put(f, size, x, y, c) {
+  x = Math.round(x); y = Math.round(y);
+  if (x < 0 || y < 0 || x >= size || y >= size) return;
+  const i = (y * size + x) * 4;
+  f[i] = c[0]; f[i+1] = c[1]; f[i+2] = c[2]; f[i+3] = 255;
+}
+function getA(f, size, x, y) {
+  if (x < 0 || y < 0 || x >= size || y >= size) return 0;
+  return f[(y * size + x) * 4 + 3];
+}
+function disc(f, size, cx, cy, r, c) {
+  const R = Math.ceil(r);
+  for (let y = -R; y <= R; y++)
+    for (let x = -R; x <= R; x++)
+      if (x*x + y*y <= r*r + 0.25) put(f, size, cx + x, cy + y, c);
+}
+// pick from a ramp (array of colors) by 0..1
+function ramp(pal, t) { return pal[clamp(Math.floor(t * pal.length), 0, pal.length - 1)]; }
+
+// ---------- palettes ----------
+const FIRE_PAL = ["#fff8d0","#ffe36a","#ffb02e","#ff7a1a","#d9400f","#8a1c10","#4a1a1a"].map(hex);
+const SMOKE_PAL = ["#5a5a64","#43434c","#2e2e36"].map(hex);
+const BLOOD_PAL = ["#e0262c","#b3141f","#80101a","#5a0a14"].map(hex);
+const BOLT_CORE = hex("#ffffff"), BOLT_MID = hex("#c8f0ff"), BOLT_GLOW = hex("#4aa8ff"), BOLT_DIM = hex("#2455b8");
+
+// ---------- effects ----------
+// Each returns an array of frames. Every effect is analytic in time so it is deterministic per seed.
+const EFFECTS = {
+  explosion(n, size, rng) {
+    const frames = [], cx = size / 2, cy = size / 2, s = size / 32;
+    const parts = [];
+    const count = 40;
+    for (let i = 0; i < count; i++) {
+      const a = rng() * Math.PI * 2;
+      parts.push({ a, v: (0.35 + rng() * 0.65) * size * 0.42, life: 0.5 + rng() * 0.5, r: (1.2 + rng() * 2.2) * s, smoke: rng() < 0.35 });
+    }
+    for (let k = 0; k < n; k++) {
+      const t = n === 1 ? 0 : k / (n - 1), f = newFrame(size);
+      // smoke / fire particles
+      for (const p of parts) {
+        if (t > p.life) continue;
+        const age = t / p.life, d = p.v * (1 - Math.pow(1 - t, 2));
+        const x = cx + Math.cos(p.a) * d, y = cy + Math.sin(p.a) * d - t * size * 0.1;
+        const col = p.smoke ? ramp(SMOKE_PAL, age) : ramp(FIRE_PAL, 0.15 + age * 0.85);
+        disc(f, size, x, y, p.r * (1 - age * 0.6) * (0.7 + 0.5 * (1 - age)), col);
+      }
+      // core fireball
+      const coreR = size * 0.34 * Math.sin(Math.min(1, t * 1.6) * Math.PI * 0.5) * (1 - clamp((t - 0.45) / 0.55, 0, 1));
+      if (coreR > 0.5) {
+        for (let layer = 0; layer < 4; layer++) {
+          const lr = coreR * (1 - layer * 0.22);
+          if (lr < 0.5) break;
+          disc(f, size, cx, cy, lr, ramp(FIRE_PAL, clamp(t * 0.5 + layer * 0.16, 0, 0.95)));
+        }
+      }
+      // initial white flash
+      if (t < 0.15) disc(f, size, cx, cy, size * 0.15 * (1 - t / 0.15) + s, FIRE_PAL[0]);
+      frames.push(f);
+    }
+    return frames;
+  },
+
+  fire(n, size, rng) {
+    const frames = [], s = size / 32, parts = [];
+    const count = 46;
+    for (let i = 0; i < count; i++) {
+      parts.push({
+        phase: rng(), x: (rng() - 0.5) * size * 0.4, drift: (rng() - 0.5) * size * 0.25,
+        wob: rng() * Math.PI * 2, r: (1.6 + rng() * 2.2) * s,
+        rise: size * (0.55 + rng() * 0.3)
+      });
+    }
+    parts.sort((a, b) => b.phase - a.phase);
+    for (let k = 0; k < n; k++) {
+      const f = newFrame(size);
+      for (const p of parts) {
+        const age = ((k / n) + p.phase) % 1;
+        const edge = 1 - Math.abs(p.x) / (size * 0.2);           // outer particles die sooner
+        const lifeAge = age / clamp(0.55 + edge * 0.45, 0.3, 1);
+        if (lifeAge >= 1) continue;
+        const x = size / 2 + p.x * (1 - age * 0.7) + p.drift * age + Math.sin(age * 6 + p.wob) * s;
+        const y = size - 2 * s - age * p.rise;
+        disc(f, size, x, y, p.r * (1 - lifeAge * 0.8), ramp(FIRE_PAL, 0.05 + lifeAge * 0.9));
+      }
+      frames.push(f);
+    }
+    return frames;
+  },
+
+  blood(n, size, rng, opts = {}) {
+    // direction: angle in degrees (screen coords: 0 = right, -90 = up, 90 = down, 180 = left) or "burst"
+    const dir = opts.direction === undefined ? "-90" : String(opts.direction);
+    const burst = dir === "burst";
+    const base = burst ? -Math.PI / 2 : parseFloat(dir) * Math.PI / 180;
+    const cone = burst ? Math.PI * 2 : Math.PI * 1.1;
+    const hx = Math.cos(base), hy = Math.sin(base);
+    const frames = [], s = size / 32;
+    // start the spray on the side opposite to its travel so it stays in frame
+    const ox = burst ? size / 2 : size / 2 - hx * size * 0.3;
+    const oy = burst ? size * 0.4 : size * (hy < -0.5 ? 0.45 : hy > 0.5 ? 0.15 : 0.35);
+    const ground = size - 2;
+    const drops = [];
+    for (let i = 0; i < 36; i++) {
+      const a = base + (rng() - 0.5) * cone;
+      const sp = (0.2 + rng() * 0.8) * size * 0.9;
+      const g = size * 2.2;
+      const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
+      // flight time until reaching ground line (solve oy + vy t + g t²/2 = ground)
+      const disc2 = vy * vy + 2 * g * (ground - oy);
+      const T = (-vy + Math.sqrt(disc2)) / g;
+      drops.push({ vx, vy, g, T, r: (0.6 + rng() * 1.3) * s, tail: rng() < 0.5 });
+    }
+    // pre-compute total animation duration in seconds so droplets finish landing by the last frames
+    const maxT = Math.max(...drops.map(d => d.T));
+    const dur = maxT * 1.0;
+    for (let k = 0; k < n; k++) {
+      const f = newFrame(size), time = (k / (n - 1 || 1)) * dur;
+      // central splat on burst start
+      if (k < Math.max(2, n * 0.25)) {
+        const q = 1 - k / Math.max(2, n * 0.25);
+        disc(f, size, ox, oy, size * 0.14 * q + s, ramp(BLOOD_PAL, 1 - q));
+      }
+      for (const d of drops) {
+        const tt = Math.min(time, d.T), landed = time >= d.T;
+        const x = ox + d.vx * tt, y = oy + d.vy * tt + 0.5 * d.g * tt * tt;
+        if (landed) {
+          // stain on ground, flattened
+          const col = BLOOD_PAL[2];
+          put(f, size, x, ground, col);
+          if (d.r > 1.2 * s) { put(f, size, x - 1, ground, BLOOD_PAL[3]); put(f, size, x + 1, ground, BLOOD_PAL[3]); put(f, size, x, ground - 1, BLOOD_PAL[1]); }
+        } else {
+          if (d.tail) {
+            for (let j = 1; j <= 2; j++) {
+              const t2 = Math.max(0, tt - j * 0.015);
+              put(f, size, ox + d.vx * t2, oy + d.vy * t2 + 0.5 * d.g * t2 * t2, BLOOD_PAL[j + 1 > 3 ? 3 : j + 1]);
+            }
+          }
+          disc(f, size, x, y, d.r, BLOOD_PAL[0]);
+          put(f, size, x - 0, y - 0, BLOOD_PAL[1]);
+        }
+      }
+      frames.push(f);
+    }
+    return frames;
+  },
+
+  lightning(n, size, rng) {
+    const frames = [];
+    // build a main bolt + branches as polylines of integer points
+    function bolt(x0, y0, x1, y1, jitter, depth) {
+      let pts = [[x0, y0], [x1, y1]];
+      for (let it = 0; it < 4; it++) {
+        const out = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i], b = pts[i+1];
+          const mx = (a[0] + b[0]) / 2 + (rng() - 0.5) * jitter, my = (a[1] + b[1]) / 2 + (rng() - 0.5) * jitter * 0.4;
+          out.push(a, [mx, my]);
+        }
+        out.push(pts[pts.length - 1]);
+        pts = out; jitter *= 0.55;
+      }
+      return pts;
+    }
+    const build = () => {
+      const segs = [];
+      const main = bolt(size * (0.4 + rng() * 0.2), 0, size * (0.35 + rng() * 0.3), size - 1, size * 0.5);
+      segs.push({ pts: main, w: 1 });
+      const bn = 2 + Math.floor(rng() * 2);
+      for (let b = 0; b < bn; b++) {
+        const i = Math.floor((0.2 + rng() * 0.6) * main.length), p = main[i];
+        const dir = rng() < 0.5 ? -1 : 1;
+        segs.push({ pts: bolt(p[0], p[1], p[0] + dir * size * (0.15 + rng() * 0.25), p[1] + size * (0.2 + rng() * 0.3), size * 0.25), w: 0 });
+      }
+      return segs;
+    };
+    // a few bolt variants that restrike/flicker
+    const variants = [build(), build()];
+    function line(f, set, x0, y0, x1, y1) {
+      x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+      const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let err = dx + dy;
+      for (;;) {
+        set.add(x0 + "," + y0);
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+      }
+    }
+    for (let k = 0; k < n; k++) {
+      const t = n === 1 ? 0 : k / (n - 1), f = newFrame(size);
+      // intensity envelope: strike, flicker, fade
+      let inten = t < 0.1 ? 0.4 + t * 6 : 1 - (t - 0.1) / 0.9;
+      if (k % 3 === 2 && t < 0.6) inten *= 0.55;                       // flicker
+      if (inten <= 0.05) { frames.push(f); continue; }
+      const v = variants[(t < 0.35 ? 0 : (k % 2)) % variants.length];
+      const core = new Set();
+      for (const sg of v) {
+        // branches disappear a bit earlier
+        if (!sg.w && t > 0.6) continue;
+        for (let i = 0; i < sg.pts.length - 1; i++) line(f, core, sg.pts[i][0], sg.pts[i][1], sg.pts[i+1][0], sg.pts[i+1][1]);
+      }
+      const glow1 = new Set(), glow2 = new Set();
+      core.forEach(key => {
+        const [x, y] = key.split(",").map(Number);
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+          const dist = Math.abs(dx) + Math.abs(dy);
+          if (dist === 0 || dist > 2) continue;
+          const kk = (x + dx) + "," + (y + dy);
+          if (core.has(kk)) continue;
+          (dist === 1 ? glow1 : glow2).add(kk);
+        }
+      });
+      if (inten > 0.35) glow2.forEach(key => { if (!glow1.has(key)) { const [x, y] = key.split(",").map(Number); put(f, size, x, y, BOLT_DIM); } });
+      glow1.forEach(key => { const [x, y] = key.split(",").map(Number); put(f, size, x, y, inten > 0.5 ? BOLT_GLOW : BOLT_DIM); });
+      core.forEach(key => { const [x, y] = key.split(",").map(Number); put(f, size, x, y, inten > 0.6 ? BOLT_CORE : inten > 0.3 ? BOLT_MID : BOLT_GLOW); });
+      // ground impact sparks
+      if (t < 0.5) {
+        const r = rng;
+        for (let i = 0; i < 6; i++) put(f, size, size / 2 + (r() - 0.5) * size * 0.6, size - 1 - r() * size * 0.15, BOLT_MID);
+      }
+      frames.push(f);
+    }
+    return frames;
+  }
+};
+
+// ---------- more effects ----------
+const GRAY_PAL = ["#c9c9d2","#a2a2ae","#7c7c8a","#5a5a68","#3f3f4c"].map(hex);
+const POISON_PAL = ["#d8ff7a","#9be03a","#5fb82a","#3a8a2a","#255a2a"].map(hex);
+const ICE_PAL = ["#ffffff","#d4f6ff","#8fdcf5","#4fa8e0","#2f6cb8"].map(hex);
+const WATER_PAL = ["#ffffff","#bfeaff","#6cc4f0","#3a8ee0","#2358b0"].map(hex);
+
+// looping puff cloud shared by smoke and poison cloud
+function puffs(n, size, rng, o) {
+  const s = size / 32, frames = [], ps = [];
+  for (let i = 0; i < o.count; i++)
+    ps.push({ phase: rng(), x: (rng() - 0.5) * size * o.spread, drift: (rng() - 0.5) * size * 0.3,
+      r: (o.r0 + rng() * o.r1) * s, wob: rng() * 6.28, dark: rng() });
+  ps.sort((a, b) => b.phase - a.phase);
+  for (let k = 0; k < n; k++) {
+    const f = newFrame(size);
+    for (const p of ps) {
+      const age = (k / n + p.phase) % 1;
+      const x = size / 2 + p.x + p.drift * age + Math.sin(age * 5 + p.wob) * s * 1.5;
+      const y = o.baseY * size - age * size * o.rise;
+      const r = p.r * (0.5 + age * o.grow);
+      const shade = clamp(0.1 + age * 0.6 + p.dark * 0.25, 0, 0.99);
+      disc(f, size, x, y, r, ramp(o.pal, shade));
+      // small highlight on young puffs for a pixel-art feel
+      if (age < 0.6 && r > 2) disc(f, size, x - r * 0.3, y - r * 0.3, r * 0.4, ramp(o.pal, Math.max(0, shade - 0.35)));
+    }
+    if (o.after) o.after(f, k, n, rng);
+    frames.push(f);
+  }
+  return frames;
+}
+EFFECTS.smoke = (n, size, rng) => puffs(n, size, rng,
+  { count: 22, spread: 0.25, r0: 2, r1: 2, baseY: 0.88, rise: 0.8, grow: 1.1, pal: GRAY_PAL });
+EFFECTS.poison = (n, size, rng) => {
+  const s = size / 32, bubbles = [];
+  for (let i = 0; i < 6; i++) bubbles.push({ phase: rng(), x: (rng() - 0.5) * size * 0.5, y: 0.45 + rng() * 0.3 });
+  return puffs(n, size, rng, { count: 26, spread: 0.55, r0: 3, r1: 2.5, baseY: 0.62, rise: 0.22, grow: 0.9, pal: POISON_PAL,
+    after(f, k, n) {
+      for (const b of bubbles) {
+        const age = (k / n + b.phase) % 1;
+        const x = size / 2 + b.x + Math.sin(age * 8) * s, y = size * b.y - age * size * 0.25;
+        if (age < 0.85) { put(f, size, x, y, POISON_PAL[0]); put(f, size, x + 1, y, POISON_PAL[1]); put(f, size, x, y + 1, POISON_PAL[1]); }
+      }
+    } });
+};
+
+EFFECTS.ice = (n, size, rng) => {
+  const frames = [], s = size / 32, cx = size / 2, cy = size * 0.62;
+  const shards = [];
+  for (let i = 0; i < 9; i++) {
+    const spread = (i / 8 - 0.5) * 2.4 + (rng() - 0.5) * 0.3;     // fan upward
+    shards.push({ a: -Math.PI / 2 + spread, len: (0.25 + rng() * 0.2 + (1 - Math.abs(spread) / 1.2) * 0.15) * size,
+      w: (2 + rng() * 1.5) * s, delay: rng() * 0.2 });
+  }
+  const flakes = [];
+  for (let i = 0; i < 14; i++) flakes.push({ a: rng() * 6.28, v: (0.2 + rng() * 0.5) * size, life: 0.3 + rng() * 0.4 });
+  function shard(f, x0, y0, a, len, w) {
+    const dx = Math.cos(a), dy = Math.sin(a);
+    for (let i = 0; i <= len; i++) {
+      const q = i / len, hw = w * (1 - q) * 0.5 + 0.3;
+      for (let j = -Math.ceil(hw); j <= Math.ceil(hw); j++) {
+        if (Math.abs(j) > hw) continue;
+        const col = j < -hw * 0.3 ? ICE_PAL[1] : j > hw * 0.3 ? ICE_PAL[3] : ICE_PAL[2];
+        put(f, size, x0 + dx * i - dy * j, y0 + dy * i + dx * j, i === Math.round(len) ? ICE_PAL[0] : col);
+      }
+    }
+  }
+  for (let k = 0; k < n; k++) {
+    const t = n === 1 ? 0 : k / (n - 1), f = newFrame(size);
+    const fade = clamp((t - 0.8) / 0.2, 0, 1);
+    // frost ground patch
+    const gr = size * 0.3 * clamp(t * 4, 0, 1) * (1 - fade);
+    for (let x = -gr; x <= gr; x++) put(f, size, cx + x, cy + size * 0.2 + (Math.abs(x) > gr * 0.7 ? 1 : 0), ICE_PAL[3]);
+    for (const sh of shards) {
+      const g = clamp((t - sh.delay) / 0.3, 0, 1);                // grow quickly then hold
+      const len = sh.len * (1 - Math.pow(1 - g, 3)) * (1 - fade);
+      if (len < 1) continue;
+      shard(f, cx, cy + size * 0.2, sh.a, len, sh.w);
+    }
+    // flying ice chips
+    for (const fl of flakes) {
+      if (t > fl.life) continue;
+      const d = fl.v * t, age = t / fl.life;
+      const x = cx + Math.cos(fl.a - 0.0) * d * 0.8, y = cy + Math.sin(fl.a) * d * 0.8 + age * age * size * 0.3 - size * 0.1;
+      put(f, size, x, y, ramp(ICE_PAL, age * 0.5));
+    }
+    // glint on the shard tips mid-animation
+    if (t > 0.35 && t < 0.65 && k % 2 === 0) {
+      const sh = shards[4], l = sh.len;
+      const tx = cx + Math.cos(sh.a) * l, ty = cy + size * 0.2 + Math.sin(sh.a) * l;
+      for (const [ax, ay] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]) put(f, size, tx + ax, ty + ay, ICE_PAL[0]);
+    }
+    frames.push(f);
+  }
+  return frames;
+};
+
+EFFECTS.water = (n, size, rng) => {
+  const frames = [], s = size / 32, cx = size / 2, ground = size - 4 * s;
+  const drops = [];
+  for (let i = 0; i < 24; i++) {
+    const a = -Math.PI / 2 + (rng() - 0.5) * 1.5, sp = (0.35 + rng() * 0.6) * size * 1.1;
+    drops.push({ vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: (0.7 + rng() * 1.2) * s });
+  }
+  const g = size * 2.6;
+  for (let k = 0; k < n; k++) {
+    const t = n === 1 ? 0 : k / (n - 1), f = newFrame(size), time = t * 0.9;
+    // rising / collapsing central column
+    const colH = size * 0.5 * Math.sin(clamp(t * 1.8, 0, 1) * Math.PI) * (t < 0.55 ? 1 : 1 - (t - 0.55) / 0.45);
+    for (let y = 0; y < colH; y++) {
+      const w = (3.2 * s) * (1 - y / (colH + 1) * 0.6) + (y > colH - 3 ? 0 : 0);
+      for (let x = -Math.floor(w / 2); x <= Math.floor(w / 2); x++)
+        put(f, size, cx + x, ground - y, Math.abs(x) > w / 2 - 1 && w > 2 ? WATER_PAL[3] : y > colH - 2 ? WATER_PAL[0] : WATER_PAL[2]);
+    }
+    if (colH > 1) disc(f, size, cx, ground - colH, 1.5 * s, WATER_PAL[1]);
+    // ripple rings on the surface
+    for (let ring = 0; ring < 2; ring++) {
+      const rt = clamp(t * 1.4 - ring * 0.25, 0, 1);
+      if (rt <= 0 || rt >= 1) continue;
+      const rx = rt * size * 0.45, col = ramp([WATER_PAL[1], WATER_PAL[2], WATER_PAL[3]], rt);
+      for (let a = 0; a < 6.283; a += 0.5 / Math.max(1, rx / 6)) put(f, size, cx + Math.cos(a) * rx, ground + 2 + Math.sin(a) * rx * 0.25, col);
+    }
+    // droplets
+    for (const d of drops) {
+      const x = cx + d.vx * time, y = ground - 2 + d.vy * time + 0.5 * g * time * time;
+      if (y > ground + 1) continue;                               // landed, absorbed by ripple
+      disc(f, size, x, y, d.r, WATER_PAL[2]);
+      put(f, size, x - d.r * 0.4, y - d.r * 0.4, WATER_PAL[0]);
+    }
+    frames.push(f);
+  }
+  return frames;
+};
+
+// ---------- bubbles, water wave, rune ----------
+function lineTo(f, size, x0, y0, x1, y1, col) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    put(f, size, x0, y0, col);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+function ring(f, size, cx, cy, r, col) {
+  const steps = Math.max(12, Math.ceil(r * 8));
+  for (let i = 0; i < steps; i++) { const a = i / steps * 6.2832; put(f, size, cx + Math.cos(a) * r, cy + Math.sin(a) * r, col); }
+}
+const RUNE_PAL = ["#ffffff","#e8c8ff","#b678ff","#7a3fd8","#42207a"].map(hex);
+
+EFFECTS.bubbles = (n, size, rng) => {
+  const s = size / 32, frames = [], bs = [];
+  for (let i = 0; i < 14; i++)
+    bs.push({ phase: rng(), x: 0.12 + rng() * 0.76, r: (1.5 + rng() * 3.5) * s, wob: rng() * 6.28, speed: 0.8 + rng() * 0.4 });
+  for (let k = 0; k < n; k++) {
+    const f = newFrame(size);
+    for (const b of bs) {
+      const age = (k / n + b.phase) % 1;
+      const x = b.x * size + Math.sin(age * 12.566 + b.wob) * 1.5 * s;
+      const y = size + b.r - age * (size + b.r * 2);
+      const pop = age > 0.92;                                    // pop burst at the end of life
+      if (pop) {
+        for (let i = 0; i < 6; i++) { const a = i * 1.047 + b.wob; put(f, size, x + Math.cos(a) * (b.r + 2), y + Math.sin(a) * (b.r + 2), WATER_PAL[1]); }
+        continue;
+      }
+      ring(f, size, x, y, b.r, WATER_PAL[2]);
+      if (b.r > 2.5 * s) ring(f, size, x, y, b.r - 1, WATER_PAL[3]);
+      // specular highlights
+      put(f, size, x - b.r * 0.5, y - b.r * 0.5, WATER_PAL[0]);
+      if (b.r > 3 * s) put(f, size, x - b.r * 0.5 + 1, y - b.r * 0.5, WATER_PAL[0]);
+    }
+    frames.push(f);
+  }
+  return frames;
+};
+
+EFFECTS.wave = (n, size, rng, opts = {}) => {
+  const mode = opts.waveDirection || "right";                     // "right" | "left" | "standing"
+  const sign = mode === "left" ? -1 : 1, standing = mode === "standing";
+  const frames = [], s = size / 32, cycles = 2 + (rng() < 0.5 ? 0 : 1);
+  const amp = 3 * s, base = size * 0.5;
+  for (let k = 0; k < n; k++) {
+    const f = newFrame(size), ph = k / n * 6.2832, p = ph * sign;
+    for (let x = 0; x < size; x++) {
+      const a = x / size * 6.2832 * cycles;
+      const w1 = standing ? Math.sin(a) * Math.cos(ph) : Math.sin(a - p);
+      const w2 = standing ? Math.sin(a * 2 + 1) * Math.cos(ph * 2) : Math.sin(a * 2 - p * 2 + 1);
+      const sp = standing ? a * 2 : a * 2 - p * 2;               // stripe phase
+      const top = Math.round(base + w1 * amp + w2 * amp * 0.3);
+      for (let y = Math.max(0, top); y < size; y++) {
+        const d = y - top;
+        let col = d < 1 ? WATER_PAL[0] : d < 3 * s ? WATER_PAL[1] : d < 8 * s ? WATER_PAL[2] : d < 16 * s ? WATER_PAL[3] : WATER_PAL[4];
+        // scrolling lighter stripes below the surface
+        if (d > 3 * s && ((Math.round(sp) % 6) + 6) % 6 === 0 && d % 5 === 2) col = WATER_PAL[1];
+        put(f, size, x, y, col);
+      }
+    }
+    frames.push(f);
+  }
+  return frames;
+};
+
+EFFECTS.rune = (n, size, rng) => {
+  const frames = [], cx = size / 2 - 0.5, cy = size / 2 - 0.5, R = size * 0.45;
+  const points = 5 + Math.floor(rng() * 3);                       // 5..7 point star
+  const skip = points >= 7 ? 3 : 2;
+  const ticks = 12;
+  for (let k = 0; k < n; k++) {
+    const rot = k / n * 6.2832 / points;                          // one full symmetry step = seamless loop
+    const f = newFrame(size);
+    const pulse = 0.5 + 0.5 * Math.sin(k / n * 6.2832);
+    ring(f, size, cx, cy, R, RUNE_PAL[3]);
+    ring(f, size, cx, cy, R - 1, RUNE_PAL[2]);
+    ring(f, size, cx, cy, R * 0.62, RUNE_PAL[3]);
+    // outer tick marks spin the opposite way
+    for (let i = 0; i < ticks; i++) {
+      const aa = i / ticks * 6.2832 - k / n * 6.2832 / ticks;
+      const r0 = R - 3, r1 = R - 1;
+      lineTo(f, size, cx + Math.cos(aa) * r0, cy + Math.sin(aa) * r0, cx + Math.cos(aa) * r1, cy + Math.sin(aa) * r1, RUNE_PAL[i % 3 === 0 ? 0 : 1]);
+    }
+    // star polygon
+    const pts = [];
+    for (let i = 0; i < points; i++) { const a = i / points * 6.2832 + rot - 1.5708; pts.push([cx + Math.cos(a) * R * 0.62, cy + Math.sin(a) * R * 0.62]); }
+    for (let i = 0; i < points; i++) {
+      const a = pts[i], b = pts[(i + skip) % points];
+      lineTo(f, size, a[0], a[1], b[0], b[1], RUNE_PAL[2]);
+    }
+    // glowing nodes on star points
+    for (const p of pts) { put(f, size, p[0], p[1], RUNE_PAL[0]); put(f, size, p[0] + 1, p[1], RUNE_PAL[1]); put(f, size, p[0], p[1] + 1, RUNE_PAL[1]); }
+    // central glyph pulses
+    disc(f, size, cx + 0.5, cy + 0.5, 1 + pulse * 2, RUNE_PAL[pulse > 0.5 ? 1 : 2]);
+    put(f, size, cx + 0.5, cy + 0.5, RUNE_PAL[0]);
+    frames.push(f);
+  }
+  return frames;
+};
+
+// ---------- app state ----------
+const $ = id => document.getElementById(id);
+const els = { effect: $("effect"), direction: $("direction"), waveDirection: $("waveDirection"), size: $("size"), frames: $("frames"), cols: $("cols"), fps: $("fps"), seed: $("seed"),
+  preview: $("preview"), sheet: $("sheet") };
+let frames = [], size = 32, playIdx = 0, timer = null;
+
+function frameToCanvas(f) {
+  const c = document.createElement("canvas"); c.width = c.height = size;
+  c.getContext("2d").putImageData(new ImageData(f, size, size), 0, 0);
+  return c;
+}
+
+// ---------- custom palette ----------
+let customPalette = null;                                          // array of [r,g,b] sorted dark → light
+const lum = c => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+
+// Read the middle row of the image and split it into runs of similar color; each run becomes one palette color.
+function extractPalette(img) {
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const y = Math.floor(c.height / 2);
+  const row = ctx.getImageData(0, y, c.width, 1).data;
+  const minRun = c.width > 64 ? 2 : 1, thresh = 24;
+  const out = [], seen = new Set();
+  let run = [];
+  const flush = () => {
+    if (run.length >= minRun) {
+      const m = run[Math.floor(run.length / 2)], key = m.join(",");
+      if (!seen.has(key)) { seen.add(key); out.push(m); }
+    }
+    run = [];
+  };
+  for (let x = 0; x < c.width; x++) {
+    const i = x * 4;
+    if (row[i + 3] < 128) { flush(); continue; }                   // skip transparent pixels
+    const px = [row[i], row[i + 1], row[i + 2]];
+    if (run.length) {
+      const r0 = run[0];
+      if (Math.abs(px[0] - r0[0]) + Math.abs(px[1] - r0[1]) + Math.abs(px[2] - r0[2]) > thresh) flush();
+    }
+    run.push(px);
+  }
+  flush();
+  return out.slice(0, 32);
+}
+
+// Map the effect's distinct colors, ordered by brightness, onto the palette (also ordered by brightness).
+function applyPalette(frames, pal) {
+  const colors = new Map();                                        // packed rgb -> [r,g,b]
+  for (const f of frames)
+    for (let i = 0; i < f.length; i += 4)
+      if (f[i + 3]) colors.set(f[i] << 16 | f[i + 1] << 8 | f[i + 2], [f[i], f[i + 1], f[i + 2]]);
+  const sorted = [...colors.entries()].sort((a, b) => lum(a[1]) - lum(b[1]));
+  const map = new Map(), m = sorted.length;
+  sorted.forEach(([key], i) => map.set(key, pal[m === 1 ? pal.length - 1 : Math.round(i / (m - 1) * (pal.length - 1))]));
+  for (const f of frames)
+    for (let i = 0; i < f.length; i += 4)
+      if (f[i + 3]) { const p = map.get(f[i] << 16 | f[i + 1] << 8 | f[i + 2]); f[i] = p[0]; f[i + 1] = p[1]; f[i + 2] = p[2]; }
+}
+
+function setPalette(pal) {
+  customPalette = pal && pal.length ? pal.slice().sort((a, b) => lum(a) - lum(b)) : null;
+  const sw = $("swatches");
+  sw.innerHTML = "";
+  (customPalette || []).forEach(c => {
+    const s = document.createElement("span");
+    s.style.background = `rgb(${c[0]},${c[1]},${c[2]})`;
+    sw.appendChild(s);
+  });
+  $("clearPalette").style.display = customPalette ? "" : "none";
+  if (!customPalette) $("paletteFile").value = "";
+  generate();
+}
+
+$("paletteFile").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const img = new Image(), url = URL.createObjectURL(file);
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const pal = extractPalette(img);
+    if (!pal.length) { alert("No colors found in that image."); setPalette(null); return; }
+    setPalette(pal);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); alert("Could not read that image."); };
+  img.src = url;
+});
+$("clearPalette").addEventListener("click", () => setPalette(null));
+
+function generate() {
+  size = +els.size.value;
+  const n = +els.frames.value;
+  const rng = mulberry32(+els.seed.value | 0);
+  $("dirLabel").style.display = els.effect.value === "blood" ? "" : "none";
+  $("waveDirLabel").style.display = els.effect.value === "wave" ? "" : "none";
+  frames = EFFECTS[els.effect.value](n, size, rng, { direction: $("direction").value, waveDirection: $("waveDirection").value });
+  if (customPalette) applyPalette(frames, customPalette);
+  els.cols.max = n;
+  if (+els.cols.value > n) els.cols.value = n;
+  updateLabels();
+  buildSheet();
+  setupPreview();
+}
+
+function updateLabels() {
+  $("framesV").textContent = els.frames.value;
+  $("colsV").textContent = els.cols.value;
+  $("fpsV").textContent = els.fps.value;
+}
+
+function buildSheet() {
+  const n = frames.length, cols = Math.min(+els.cols.value, n), rows = Math.ceil(n / cols);
+  const c = els.sheet;
+  c.width = cols * size; c.height = rows * size;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
+  frames.forEach((f, i) => ctx.drawImage(frameToCanvas(f), (i % cols) * size, Math.floor(i / cols) * size));
+  // display scale: integer, fit to ~512px wide
+  const scale = Math.max(1, Math.floor(512 / c.width));
+  c.style.width = c.width * scale + "px";
+  c.style.height = c.height * scale + "px";
+  $("sheetInfo").textContent = `${c.width} × ${c.height} px — ${cols} columns × ${rows} rows, ${n} frames of ${size}×${size}`;
+}
+
+function setupPreview() {
+  const c = els.preview;
+  c.width = c.height = size;
+  const scale = Math.max(1, Math.floor(256 / size));
+  c.style.width = c.style.height = size * scale + "px";
+  playIdx = 0;
+  restartTimer();
+}
+
+function drawPreview() {
+  const ctx = els.preview.getContext("2d");
+  ctx.clearRect(0, 0, size, size);
+  ctx.putImageData(new ImageData(frames[playIdx], size, size), 0, 0);
+  $("frameInfo").textContent = `Frame ${playIdx + 1} / ${frames.length} @ ${els.fps.value} fps`;
+  playIdx = (playIdx + 1) % frames.length;
+}
+
+function restartTimer() {
+  clearInterval(timer);
+  drawPreview();
+  timer = setInterval(drawPreview, 1000 / +els.fps.value);
+}
+
+function download() {
+  els.sheet.toBlob(blob => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${els.effect.value}_${size}px_${frames.length}f_${Math.min(+els.cols.value, frames.length)}c.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, "image/png");
+}
+
+// ---------- wiring ----------
+["effect", "direction", "waveDirection", "size", "frames", "seed"].forEach(id => els[id].addEventListener("input", generate));
+els.cols.addEventListener("input", () => { updateLabels(); buildSheet(); });
+els.fps.addEventListener("input", () => { updateLabels(); restartTimer(); });
+$("regen").addEventListener("click", () => { els.seed.value = Math.floor(Math.random() * 100000); generate(); });
+$("download").addEventListener("click", download);
+generate();
+</script>
+</body>
+</html>
