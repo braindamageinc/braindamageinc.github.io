@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprite Sheet Animator</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #222; color: #eee; }
+  h1 { font-size: 1.3em; }
+  fieldset { border: 1px solid #555; margin-bottom: 16px; padding: 12px; }
+  legend { padding: 0 6px; }
+  label { margin-right: 14px; }
+  input[type=number] { width: 80px; }
+  button { padding: 6px 14px; margin-right: 6px; cursor: pointer; }
+  .sheet-wrap { max-width: 100%; max-height: 400px; overflow: auto; border: 1px solid #555; display: inline-block; background: #444; }
+  #preview { display: block; image-rendering: pixelated; }
+  #anim { border: 1px solid #555; background: #444; image-rendering: pixelated; }
+  #info, #status { margin: 8px 0; color: #9cf; }
+  .error { color: #f88 !important; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>Sprite Sheet Animator</h1>
+
+<fieldset>
+  <legend>1. Image</legend>
+  <input type="file" id="file" accept="image/*">
+  <div id="info">No image loaded.</div>
+  <div class="sheet-wrap hidden" id="sheetWrap"><img id="preview" alt="Uploaded sprite sheet"></div>
+</fieldset>
+
+<fieldset id="frameSet" class="hidden">
+  <legend>2. Frame layout</legend>
+  <div>
+    <label><input type="radio" name="mode" value="size" checked> Frame resolution</label>
+    <label><input type="radio" name="mode" value="grid"> Rows &amp; columns</label>
+  </div>
+  <div id="sizeInputs">
+    <label>Width (px) <input type="number" id="fw" min="1" value="32"></label>
+    <label>Height (px) <input type="number" id="fh" min="1" value="32"></label>
+  </div>
+  <div id="gridInputs" class="hidden">
+    <label>Columns <input type="number" id="gc" min="1" value="1"></label>
+    <label>Rows <input type="number" id="gr" min="1" value="1"></label>
+  </div>
+  <div id="status"></div>
+</fieldset>
+
+<fieldset id="playSet" class="hidden">
+  <legend>3. Animation</legend>
+  <div>
+    <canvas id="anim" width="64" height="64"></canvas>
+  </div>
+  <p>
+    <button id="play">Play</button>
+    <button id="pause">Pause</button>
+    <button id="stop">Stop</button>
+    <button id="reset">Reset</button>
+    <button id="prev" title="Previous frame">&#9664; Prev</button>
+    <button id="next" title="Next frame">Next &#9654;</button>
+    <label>Framerate (fps) <input type="number" id="fps" min="0.1" max="120" step="any" value="8"></label>
+  </p>
+  <div id="frameInfo"></div>
+</fieldset>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const fileEl = $('file'), info = $('info'), preview = $('preview'), sheetWrap = $('sheetWrap');
+  const frameSet = $('frameSet'), playSet = $('playSet');
+  const fwEl = $('fw'), fhEl = $('fh'), gcEl = $('gc'), grEl = $('gr'),
+        sizeInputs = $('sizeInputs'), gridInputs = $('gridInputs'),
+        modeEls = document.querySelectorAll('input[name=mode]'), fpsEl = $('fps'), status = $('status'), frameInfo = $('frameInfo');
+  const canvas = $('anim'), ctx = canvas.getContext('2d');
+
+  let img = null, cols = 0, rows = 0, total = 0, fw = 0, fh = 0;
+  let current = 0, playing = false, lastTime = 0, acc = 0, rafId = null, objectUrl = null;
+
+  fileEl.addEventListener('change', () => {
+    const f = fileEl.files[0];
+    if (!f) return;
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(f);
+    const im = new Image();
+    im.onload = () => {
+      img = im;
+      preview.src = objectUrl;
+      sheetWrap.classList.remove('hidden');
+      info.classList.remove('error');
+      info.textContent = `${f.name} — ${im.naturalWidth} × ${im.naturalHeight} px`;
+      frameSet.classList.remove('hidden');
+      playSet.classList.remove('hidden');
+      stop();
+      recompute();
+    };
+    im.onerror = () => {
+      info.classList.add('error');
+      info.textContent = 'Could not load that file as an image.';
+    };
+    im.src = objectUrl;
+  });
+
+  function recompute() {
+    if (!img) return;
+    const gridMode = mode() === 'grid';
+    if (gridMode) {
+      const c = Math.floor(Number(gcEl.value)), r = Math.floor(Number(grEl.value));
+      fw = c > 0 ? Math.floor(img.naturalWidth / c) : 0;
+      fh = r > 0 ? Math.floor(img.naturalHeight / r) : 0;
+    } else {
+      fw = Math.floor(Number(fwEl.value));
+      fh = Math.floor(Number(fhEl.value));
+    }
+    status.classList.remove('error');
+    if (!(fw > 0 && fh > 0) || fw > img.naturalWidth || fh > img.naturalHeight) {
+      cols = rows = total = 0;
+      status.classList.add('error');
+      status.textContent = gridMode
+        ? 'Rows and columns must be positive and no larger than the image dimensions.'
+        : 'Frame size must be positive and no larger than the image.';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      frameInfo.textContent = '';
+      pause();
+      return;
+    }
+    cols = Math.floor(img.naturalWidth / fw);
+    rows = Math.floor(img.naturalHeight / fh);
+    total = cols * rows;
+    const extraX = img.naturalWidth - cols * fw, extraY = img.naturalHeight - rows * fh;
+    status.textContent = (gridMode ? `Frame size: ${fw} × ${fh} px — ` : '') +
+      `Grid: ${cols} columns × ${rows} rows = ${total} frames` +
+      (extraX || extraY ? ` (ignoring ${extraX}px right / ${extraY}px bottom remainder)` : '');
+    canvas.width = fw;
+    canvas.height = fh;
+    // scale small frames up for visibility
+    const scale = Math.max(1, Math.min(8, Math.floor(256 / Math.max(fw, fh))));
+    canvas.style.width = fw * scale + 'px';
+    canvas.style.height = fh * scale + 'px';
+    if (current >= total) current = 0;
+    draw();
+  }
+
+  function draw() {
+    if (!total) return;
+    const col = current % cols, row = Math.floor(current / cols);
+    ctx.clearRect(0, 0, fw, fh);
+    ctx.drawImage(img, col * fw, row * fh, fw, fh, 0, 0, fw, fh);
+    frameInfo.textContent = `Frame ${current + 1} / ${total}  (col ${col}, row ${row}, at x=${col * fw}, y=${row * fh})`;
+  }
+
+  function fps() {
+    const v = Number(fpsEl.value);
+    return v > 0 ? Math.min(v, 120) : 8;
+  }
+
+  function tick(t) {
+    if (!playing) return;
+    acc += (t - lastTime) / 1000;
+    lastTime = t;
+    const step = 1 / fps();
+    if (acc >= step) {
+      const n = Math.floor(acc / step);
+      acc -= n * step;
+      current = (current + n) % total;
+      draw();
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function play() {
+    if (!total || playing) return;
+    playing = true;
+    lastTime = performance.now();
+    rafId = requestAnimationFrame(tick);
+  }
+  function pause() {
+    playing = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  function stop() { // halt and return to first frame
+    pause();
+    current = 0; acc = 0;
+    draw();
+  }
+  function reset() { // back to first frame; keeps playing if it was playing
+    current = 0; acc = 0;
+    lastTime = performance.now();
+    draw();
+  }
+
+  function stepFrame(d) { // manual step; pauses playback
+    if (!total) return;
+    pause();
+    current = (current + d + total) % total;
+    acc = 0;
+    draw();
+  }
+
+  $('prev').addEventListener('click', () => stepFrame(-1));
+  $('next').addEventListener('click', () => stepFrame(1));
+  $('play').addEventListener('click', play);
+  $('pause').addEventListener('click', pause);
+  $('stop').addEventListener('click', stop);
+  $('reset').addEventListener('click', reset);
+  function mode() { return document.querySelector('input[name=mode]:checked').value; }
+
+  // Switching modes carries the current values over so the other inputs stay in sync.
+  modeEls.forEach(el => el.addEventListener('change', () => {
+    if (el.checked && img) {
+      if (el.value === 'grid') {
+        gcEl.value = cols || gcEl.value;
+        grEl.value = rows || grEl.value;
+      } else if (fw > 0 && fh > 0) {
+        fwEl.value = fw;
+        fhEl.value = fh;
+      }
+    }
+    const g = mode() === 'grid';
+    gridInputs.classList.toggle('hidden', !g);
+    sizeInputs.classList.toggle('hidden', g);
+    recompute();
+  }));
+  gcEl.addEventListener('input', recompute);
+  grEl.addEventListener('input', recompute);
+  fwEl.addEventListener('input', recompute);
+  fhEl.addEventListener('input', recompute);
+})();
+</script>
+</body>
+</html>
