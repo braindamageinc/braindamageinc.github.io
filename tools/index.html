@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tools</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; background: #111; color: #ddd; }
+  h1 { font-size: 1.4rem; }
+  ul { list-style: none; padding: 0; }
+  li { margin: .4rem 0; }
+  a { color: #7cc4ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>Tools</h1>
+<ul id="list"></ul>
+<script>
+// Fallback list, used if the GitHub API is unreachable (keep in sync when adding files).
+const FALLBACK = [
+  "add_border.html",
+  "anim_player.html",
+  "audio_sfxr.html",
+  "gif_extract.html",
+  "merge_row_spritesheets.html",
+  "merge_single_sprites.html",
+  "pixel_vfx_generator.html"
+];
+
+function render(files) {
+  const ul = document.getElementById("list");
+  ul.innerHTML = "";
+  files.filter(f => f !== "index.html").sort().forEach(f => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = encodeURIComponent(f);
+    a.textContent = f;
+    li.appendChild(a);
+    ul.appendChild(li);
+  });
+}
+
+render(FALLBACK);
+
+// Try to list the folder live via the GitHub contents API.
+fetch("https://api.github.com/repos/braindamageinc/braindamageinc.github.io/contents/tools?ref=gh-pages")
+  .then(r => r.ok ? r.json() : Promise.reject())
+  .then(items => render(items.filter(i => i.type === "file").map(i => i.name)))
+  .catch(() => {});
+</script>
+</body>
+</html>
